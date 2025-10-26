@@ -317,12 +317,6 @@ function applyScrollTweenState() {
   setScatterAmplitude(scrollTweenState.scatter, { syncTarget: true });
   setMorphProgress(scrollTweenState.morph);
   
-  // Apply color mix to shader
-  const uniforms = points?.material?.uniforms;
-  if (uniforms?.uColorMix) {
-    uniforms.uColorMix.value = scrollTweenState.colorMix;
-  }
-  
   // Apply transform properties directly to the points geometry
   if (points) {
     // Set rotation order to avoid gimbal lock - use YXZ for more stable rotations
@@ -2541,7 +2535,6 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uGlowMode:    { value: encodeGlowMode(glowMode) },
     uRandomGlowSpeed: { value: randomGlowSpeed },
     uMorphFactor: { value: morphUniformValue },
-    uColorMix: { value: 0.0 },  // color blend: 0 = current, 1 = new
 
     // Size attenuation (0 = off, 1 = on). Ref distance where size is unchanged.
     uSizeAttenEnabled: { value: 0.0 },
@@ -2591,7 +2584,6 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uniform float uPulseAmp;
     uniform float uGlowMode;
     uniform float uRandomGlowSpeed;
-    uniform float uColorMix;
     uniform float uSizeAttenEnabled;
     uniform float uSizeAttenRef;
     // World-size uniforms
@@ -2628,7 +2620,6 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     varying float vViewZ;
     varying float vHash;
     varying float vMorphFactor;
-    varying float vColorMix;
 
     void main() {
       float morph = clamp(uMorphFactor, 0.0, 1.0);
@@ -2763,8 +2754,7 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
       // If morphColor isn't available, use color as fallback
       bool hasMorphColor = length(morphColor) > 0.001;
       vMorphColor = hasMorphColor ? morphColor : color;
-      vMorphFactor = morph; // pass morph factor to fragment shader
-      vColorMix = uColorMix; // pass color mix factor to fragment shader
+      vMorphFactor = morph; // pass morph factor to fragment shader (used for both position and color blending)
       vViewZ = dist;
       gl_Position = projectionMatrix * mvPosition;
     }
@@ -2789,7 +2779,6 @@ varying float vPulse;
 varying float vViewZ;
 varying float vHash;
 varying float vMorphFactor;
-varying float vColorMix;
 
 void main() {
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
@@ -2806,9 +2795,8 @@ void main() {
 
   float pulse = clamp(vPulse, 0.0, 1.0);
   
-  // Blend colors smoothly using vColorMix (separate from position morph)
-  // Debug: output colorMix as color for first few frames to verify it's working
-  vec3 blendedColor = mix(vColor, vMorphColor, vColorMix);
+  // Blend colors using the same morph factor as positions (synchronized morph)
+  vec3 blendedColor = mix(vColor, vMorphColor, vMorphFactor);
   
   // Apply vertex color or use base white
   vec3 base = mix(uColor, blendedColor, uUseVertexColor);
@@ -3106,12 +3094,6 @@ if (!points) {
     }
     if (u.uMorphFactor) {
       u.uMorphFactor.value = morphUniformValue;
-    }
-
-    // 👇 this was missing: carry over the live colour blend % 
-    if (u.uColorMix) {
-      // scrollTweenState.colorMix is what you tween in tweenToScrollTargets()
-      u.uColorMix.value = scrollTweenState?.colorMix ?? 0;
     }
 
     // also re-apply fog, scatter, etc.
