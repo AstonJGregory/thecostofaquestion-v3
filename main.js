@@ -317,6 +317,12 @@ function applyScrollTweenState() {
   setScatterAmplitude(scrollTweenState.scatter, { syncTarget: true });
   setMorphProgress(scrollTweenState.morph);
   
+  // Apply color blend to shader
+  const uniforms = points?.material?.uniforms;
+  if (uniforms?.uColorMix) {
+    uniforms.uColorMix.value = scrollTweenState.colorMix;
+  }
+  
   // Apply transform properties directly to the points geometry
   if (points) {
     // Set rotation order to avoid gimbal lock - use YXZ for more stable rotations
@@ -2535,6 +2541,7 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uGlowMode:    { value: encodeGlowMode(glowMode) },
     uRandomGlowSpeed: { value: randomGlowSpeed },
     uMorphFactor: { value: morphUniformValue },
+    uColorMix: { value: 0.0 }, // Explicit color blend uniform (0 = base color, 1 = morph color)
 
     // Size attenuation (0 = off, 1 = on). Ref distance where size is unchanged.
     uSizeAttenEnabled: { value: 0.0 },
@@ -2584,6 +2591,7 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uniform float uPulseAmp;
     uniform float uGlowMode;
     uniform float uRandomGlowSpeed;
+    uniform float uColorMix;
     uniform float uSizeAttenEnabled;
     uniform float uSizeAttenRef;
     // World-size uniforms
@@ -2616,6 +2624,7 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uniform float uWindEnabled;
     varying vec3  vColor;
     varying vec3  vMorphColor;
+    varying vec3  vBlendedColor;
     varying float vPulse;
     varying float vViewZ;
     varying float vHash;
@@ -2754,7 +2763,10 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
       // If morphColor isn't available, use color as fallback
       bool hasMorphColor = length(morphColor) > 0.001;
       vMorphColor = hasMorphColor ? morphColor : color;
-      vMorphFactor = morph; // pass morph factor to fragment shader (used for both position and color blending)
+      // Blend colors in vertex shader using uColorMix (explicit color blend separate from position morph)
+      float colorMix = clamp(uColorMix, 0.0, 1.0);
+      vBlendedColor = mix(vColor, vMorphColor, colorMix);
+      vMorphFactor = morph; // pass morph factor to fragment shader (for position morph)
       vViewZ = dist;
       gl_Position = projectionMatrix * mvPosition;
     }
@@ -2775,6 +2787,7 @@ uniform vec3  uFogColor;
 
 varying vec3  vColor;
 varying vec3  vMorphColor;
+varying vec3  vBlendedColor;
 varying float vPulse;
 varying float vViewZ;
 varying float vHash;
@@ -2795,11 +2808,9 @@ void main() {
 
   float pulse = clamp(vPulse, 0.0, 1.0);
   
-  // Blend colors using the same morph factor as positions (synchronized morph)
-  vec3 blendedColor = mix(vColor, vMorphColor, vMorphFactor);
-  
-  // Apply vertex color or use base white
-  vec3 base = mix(uColor, blendedColor, uUseVertexColor);
+  // Use pre-blended color from vertex shader (blended using uColorMix)
+  // This ensures colors always blend smoothly on-GPU every frame
+  vec3 base = mix(uColor, vBlendedColor, uUseVertexColor);
   vec3 highlighted = mix(base, uHighlightColor, pulse);
   vec3 col  = highlighted * (1.0 + uGlowBoost * pulse);
 
@@ -3042,45 +3053,36 @@ function buildPoints() {
 
   const hasColor = !!g.getAttribute('color');
 
-if (!points) {
-  // first time: create material + mesh
-  const mat = makeGlowMaterial(hasColor, pointSizePx);
-  points = new THREE.Points(g, mat);
-  points.frustumCulled = true;
-  pointCloudGroup.add(points);
-} else {
-  // subsequent rebuilds: keep material, just swap geometry
-  points.geometry.dispose();
-  points.geometry = g;
-
-  // also, if pointSizePx changed and you need to update uBaseSize, do it here
-  if (points.material?.uniforms?.uBaseSize) {
-    points.material.uniforms.uBaseSize.value = pointSizePx;
-  }
-}
-
-// after that, sync uniforms again (world size, fog, scatter, colorMix, etc)
-
-  const mat = makeGlowMaterial(hasColor, pointSizePx);
-  if (mat?.uniforms?.uSquareMix) {
-    mat.uniforms.uSquareMix.value = squareMix;
-  }
-
-  // clean up old
-  if (points) {
+  if (!points) {
+    // First time: create material + mesh
+    const mat = makeGlowMaterial(hasColor, pointSizePx);
+    if (mat?.uniforms?.uSquareMix) {
+      mat.uniforms.uSquareMix.value = squareMix;
+    }
+    points = new THREE.Points(g, mat);
+    points.frustumCulled = true;
+    pointCloudGroup.add(points);
+  } else {
+    // Subsequent rebuilds: keep material, just swap geometry
     points.geometry.dispose();
-    points.material.dispose();
-    pointCloudGroup.remove(points);
-  }
+    points.geometry = g;
 
-  points = new THREE.Points(g, mat);
-  points.frustumCulled = true;
-  pointCloudGroup.add(points);
+    // Update uBaseSize if pointSizePx changed
+    if (points.material?.uniforms?.uBaseSize) {
+      points.material.uniforms.uBaseSize.value = pointSizePx;
+    }
+    
+    // Update uUseVertexColor if color availability changed
+    if (points.material?.uniforms?.uUseVertexColor !== undefined) {
+      points.material.uniforms.uUseVertexColor.value = hasColor ? 1 : 0;
+    }
+  }
 
   // --- sync uniforms to current app state (IMPORTANT) ---
+  // This ensures uniforms maintain their values across rebuilds
   const u = points.material.uniforms;
   if (u) {
-    // world size / camera dependent
+    // World size / camera dependent
     updateWorldSizeUniforms();
 
     if (u.uWindAmp) {
@@ -3092,11 +3094,14 @@ if (!points) {
     if (u.uHighlightColor) {
       u.uHighlightColor.value.set(highlightColorHex);
     }
+    
+    // CRITICAL: Restore morph and color blend values
     if (u.uMorphFactor) {
       u.uMorphFactor.value = morphUniformValue;
     }
-
-    // also re-apply fog, scatter, etc.
+    if (u.uColorMix) {
+      u.uColorMix.value = scrollTweenState?.colorMix ?? 0;
+    }
   }
 
   updateFog();
