@@ -317,7 +317,7 @@ function applyScrollTweenState() {
   setScatterAmplitude(scrollTweenState.scatter, { syncTarget: true });
   setMorphProgress(scrollTweenState.morph);
   
-  // Apply color blend to shader
+  // Apply color mix to shader
   const uniforms = points?.material?.uniforms;
   if (uniforms?.uColorMix) {
     uniforms.uColorMix.value = scrollTweenState.colorMix;
@@ -504,6 +504,7 @@ sections.forEach((section) => {
     path: section.modelPath,
     geometry: null,
     morphArray: null,
+    colorArray: null, // Store color data for reuse between sections
   });
 });
 
@@ -552,6 +553,13 @@ function ensureSectionGeometry(section) {
       (geom) => {
         preprocessGeometry(geom, path);
         asset.geometry = geom;
+        
+        // Store color data in asset.colorArray for potential reuse
+        const colorAttr = geom.getAttribute('color');
+        if (colorAttr && colorAttr.array) {
+          asset.colorArray = colorAttr.array.slice(); // Clone the color array
+        }
+        
         resolve(geom);
       },
       undefined,
@@ -632,11 +640,22 @@ function generateMorphColorArrayWithFractions(targetGeom, sampleFractions) {
   }
 
   const tgtColAttr = targetGeom?.getAttribute('color');
-  if (!tgtColAttr) return null;
+  const tgtColorStride = 3; // Always RGB
+  
+  // If no color attribute, return an all-black array (valid color data)
+  if (!tgtColAttr) {
+    const result = new Float32Array(sampleFractions.length * tgtColorStride);
+    // result is already filled with zeros
+    return result;
+  }
+  
   const tgtColorArray = tgtColAttr.array;
-  const tgtColorStride = tgtColAttr.itemSize || 3;
   const tgtCount = tgtColAttr.count;
-  if (!tgtColorArray || tgtCount <= 0) return null;
+  if (!tgtColorArray || tgtCount <= 0) {
+    // Return all-black array if no color data
+    const result = new Float32Array(sampleFractions.length * tgtColorStride);
+    return result;
+  }
 
   const result = new tgtColorArray.constructor(sampleFractions.length * tgtColorStride);
   for (let i = 0; i < sampleFractions.length; i++) {
@@ -667,19 +686,50 @@ function setPointsMorphColor(array) {
   if (!morphAttr || !array) return;
   if (array.length !== morphAttr.array.length) return;
   
-  // Update morphColor with the NEW colors from the target geometry
+  // Step 1: Capture the CURRENT on-screen color (what the user sees right now)
+  // The displayed color is: mix(color, morphColor, uColorMix)
+  // We need to bake this into the base color attribute before transitioning to new colors
+  const colorAttr = points?.geometry?.getAttribute('color');
+  if (colorAttr && colorAttr.array.length === array.length) {
+    const uniforms = points?.material?.uniforms;
+    const colorMix = uniforms?.uColorMix?.value ?? 0;
+    
+    // Reconstruct the current visual color by blending color and morphColor with the current colorMix
+    const currentMorphColorArray = morphAttr.array;
+    for (let i = 0; i < colorAttr.array.length; i += 3) {
+      const baseR = colorAttr.array[i + 0];
+      const baseG = colorAttr.array[i + 1];
+      const baseB = colorAttr.array[i + 2];
+      const morphR = currentMorphColorArray[i + 0];
+      const morphG = currentMorphColorArray[i + 1];
+      const morphB = currentMorphColorArray[i + 2];
+      
+      // Calculate current visual color: mix(base, morph, colorMix)
+      const visualR = baseR * (1 - colorMix) + morphR * colorMix;
+      const visualG = baseG * (1 - colorMix) + morphG * colorMix;
+      const visualB = baseB * (1 - colorMix) + morphB * colorMix;
+      
+      // Write the visual color back into the base color attribute
+      // This becomes the "from" state for the next morph
+      colorAttr.array[i + 0] = visualR;
+      colorAttr.array[i + 1] = visualG;
+      colorAttr.array[i + 2] = visualB;
+    }
+    colorAttr.needsUpdate = true;
+  }
+  
+  // Step 2: Write the NEW target colors into morphColor
+  // This includes pure black (0,0,0) vertices - they are valid!
   morphAttr.array.set(array);
   morphAttr.needsUpdate = true;
   
-  // IMPORTANT: Also update the base color to the CURRENT displayed colors
-  // This ensures that when we start blending, we're blending FROM the current visual state
-  const colorAttr = points?.geometry?.getAttribute('color');
-  if (colorAttr && colorAttr.array.length === array.length) {
-    // At the start of a new transition, we want to blend from the current color state
-    // Copy current colors to base color attribute so blend starts from visual state, not from previous section
-    // Don't update base colors here - they should already be the current visual state
-    console.log('[morph] Updated morphColor with new target colors');
+  // Step 3: Reset colorMix to 0 so the next morph starts fresh
+  const uniforms = points?.material?.uniforms;
+  if (uniforms?.uColorMix) {
+    uniforms.uColorMix.value = 0;
   }
+  
+  console.log('[morph] Captured current visual state and set new target colors');
 }
 
 function setPointsPositionArray(array) {
@@ -712,15 +762,48 @@ function ensureSectionMorphTarget(section) {
     asset.morphArray = array;
     setPointsMorphTarget(asset.morphArray);
     
-    // Also update morph colors if available
-    const colorArray = generateMorphColorArrayWithFractions(geom, targetSampleFractions);
-    if (colorArray) {
-      // Update morphColor with new target colors
-      setPointsMorphColor(colorArray);
-      console.log('[morph] Updated morph colors for section:', section?.id);
-    } else {
-      console.log('[morph] No colors available for section:', section?.id);
+    // Check if this section has a colorSource - if so, use that model's colors
+    let colorGeometry = geom; // Default to current section's geometry
+    let colorSourceId = section?.id; // For logging
+    
+    if (section?.colorSource) {
+      // Find the asset whose path matches the colorSource
+      let sourceAsset = null;
+      sectionAssets.forEach((asset) => {
+        if (asset.path === section.colorSource) {
+          sourceAsset = asset;
+        }
+      });
+      
+      if (sourceAsset) {
+        // Load the source geometry if not already loaded
+        return ensureSectionGeometry({ id: sourceAsset.section.id }).then((sourceGeom) => {
+          colorGeometry = sourceGeom;
+          colorSourceId = `${section.id} (colors from ${sourceAsset.section.id})`;
+          
+          // Generate colors from the source geometry
+          // IMPORTANT: Always generate colorArray even if it contains mostly zeros
+          const colorArray = generateMorphColorArrayWithFractions(colorGeometry, targetSampleFractions);
+          
+          // Always call setPointsMorphColor - even all-black arrays are valid
+          setPointsMorphColor(colorArray);
+          console.log('[morph] Updated morph colors for section:', colorSourceId);
+          
+          currentModelPath = asset.path ?? section.modelPath;
+          return asset.morphArray;
+        });
+      } else {
+        console.warn('[morph] colorSource path not found:', section.colorSource, '- falling back to section colors');
+      }
     }
+    
+    // Generate colors from current geometry (default behavior)
+    // IMPORTANT: Always generate colorArray even if it contains mostly zeros
+    const colorArray = generateMorphColorArrayWithFractions(colorGeometry, targetSampleFractions);
+    
+    // Always call setPointsMorphColor - even all-black arrays are valid
+    setPointsMorphColor(colorArray);
+    console.log('[morph] Updated morph colors for section:', colorSourceId);
     
     currentModelPath = asset.path ?? section.modelPath;
     return asset.morphArray;
@@ -732,6 +815,25 @@ function refreshAllMorphTargets() {
   sectionAssets.forEach((asset) => {
     asset.morphArray = null;
   });
+}
+
+function getTransitionOverride(prevSection, nextSection) {
+  // Check transitionRules in nextSection (for entering from prevSection)
+  if (nextSection?.transitionRules?.from?.[prevSection?.id]) {
+    return nextSection.transitionRules.from[prevSection.id];
+  }
+  
+  // Check transitionRules in prevSection (for leaving to nextSection)
+  if (prevSection?.transitionRules?.to?.[nextSection?.id]) {
+    return prevSection.transitionRules.to[nextSection.id];
+  }
+  
+  // Fall back to old transitionOverrides for backward compatibility
+  if (nextSection?.transitionOverrides) {
+    return nextSection.transitionOverrides;
+  }
+  
+  return null;
 }
 
 function startSectionTransition(nextIndex, direction = 1, { initialProgress = 0 } = {}) {
@@ -761,8 +863,30 @@ function startSectionTransition(nextIndex, direction = 1, { initialProgress = 0 
   sectionState.nextSection = nextSection;
   sectionState.spinTurns = baseTurns;
   sectionState.rotationStart = pointCloudGroup.rotation.y;
-  sectionState.rotationMid = sectionState.rotationStart + directionSign * baseTurns * Math.PI;
-  sectionState.rotationTarget = sectionState.rotationStart + directionSign * baseTurns * Math.PI * 2;
+  
+  // Get transition override based on pair of sections
+  const prevSection = getSectionByIndex(sectionState.index);
+  const transitionRule = getTransitionOverride(prevSection, nextSection);
+  
+  // Check if spin/scatter are allowed based on the rule
+  const allowSpin = transitionRule?.allowSpin !== false;
+  const allowScatter = transitionRule?.allowScatter !== false;
+  
+  // Store these flags in sectionState so updateSectionTransition can access them
+  sectionState.allowSpin = allowSpin;
+  sectionState.allowScatter = allowScatter;
+  
+  // If spin is disabled, mid and target should be the same (no intermediate rotation)
+  if (allowSpin) {
+    sectionState.rotationMid = sectionState.rotationStart + directionSign * baseTurns * Math.PI;
+    sectionState.rotationTarget = sectionState.rotationStart + directionSign * baseTurns * Math.PI * 2;
+  } else {
+    // No spin: go straight to target transform rotation
+    const nextTransform = getSectionTransform(nextSection);
+    sectionState.rotationMid = nextTransform.rotation.y;
+    sectionState.rotationTarget = nextTransform.rotation.y;
+  }
+  
   sectionState.rotationDuration = nextSection.transition?.spinDuration ?? SECTION_TRANSITION.spinDuration ?? 3.6;
   sectionState.scatterOut = Math.max(scatterOut, SCROLL_SCATTER_PEAK);
   sectionState.nextScatterRest = scatterIn;
@@ -855,12 +979,24 @@ function updateSectionTransition() {
   const currentSection = getSectionByIndex(sectionState.index);
   const nextSection = sectionState.nextSection;
   
+  // Get allowSpin/allowScatter from sectionState (set during startSectionTransition)
+  const allowSpin = sectionState.allowSpin !== false;
+  const allowScatter = sectionState.allowScatter !== false;
+  
   switch (sectionState.phase) {
     case 'fadeOut': {
       const eased = easeInOutCubic(sectionState.transitionProgress);
       ensureTextOpacity(1 - eased);
-      const scatterTarget = THREE.MathUtils.lerp(sectionState.scatterRest, SCROLL_SCATTER_PEAK, eased);
-      const rotationTarget = THREE.MathUtils.lerp(sectionState.rotationStart, sectionState.rotationMid, eased);
+      
+      // Scatter: either animate to peak OR keep at rest
+      const scatterTarget = allowScatter 
+        ? THREE.MathUtils.lerp(sectionState.scatterRest, SCROLL_SCATTER_PEAK, eased)
+        : sectionState.scatterRest;
+      
+      // Rotation: either spin through mid OR stay at start rotation (no spin)
+      const rotationTarget = allowSpin
+        ? THREE.MathUtils.lerp(sectionState.rotationStart, sectionState.rotationMid, eased)
+        : sectionState.rotationStart; // Keep start rotation when spin is disabled
       
       // Apply morph at midpoint when scatter is maximum (concentrated color transition)
       // Map progress 0->1 to morph progress 0->1 (but only if colors are ready)
@@ -904,9 +1040,15 @@ function updateSectionTransition() {
       // Use next section transform during loading
       const nextTransform = getSectionTransform(nextSection);
       
+      // Rotation: either at mid (if spinning) OR keep start rotation (if no spin)
+      const loadingRotation = allowSpin ? sectionState.rotationMid : sectionState.rotationStart;
+      
+      // Scatter: either at peak (if scattering) OR at rest (if no scatter)
+      const loadingScatter = allowScatter ? SCROLL_SCATTER_PEAK : sectionState.nextScatterRest;
+      
       tweenToScrollTargets({
-        rotation: sectionState.rotationMid,
-        scatter: SCROLL_SCATTER_PEAK,
+        rotation: loadingRotation,
+        scatter: loadingScatter,
         morph: morphTarget,
         colorMix: morphTarget,  // Color mix follows morph progress
         transform: nextTransform
@@ -917,8 +1059,16 @@ function updateSectionTransition() {
     case 'fadeIn': {
       const eased = easeInOutCubic(sectionState.transitionProgress);
       ensureTextOpacity(eased);
-      const scatterTarget = THREE.MathUtils.lerp(SCROLL_SCATTER_PEAK, sectionState.nextScatterRest, eased);
-      const rotationTarget = THREE.MathUtils.lerp(sectionState.rotationMid, sectionState.rotationTarget, eased);
+      
+      // Scatter: either animate from peak to rest OR stay at rest
+      const scatterTarget = allowScatter
+        ? THREE.MathUtils.lerp(SCROLL_SCATTER_PEAK, sectionState.nextScatterRest, eased)
+        : sectionState.nextScatterRest;
+      
+      // Rotation: either finish spin from mid to target OR keep start rotation (no spin)
+      const rotationTarget = allowSpin
+        ? THREE.MathUtils.lerp(sectionState.rotationMid, sectionState.rotationTarget, eased)
+        : sectionState.rotationStart; // Keep start rotation when spin is disabled
       
       // Keep morph at 1.0 during fadeIn (colors already transitioned at midpoint)
       // No need to reverse the color morph, we stay at the new colors
@@ -2541,7 +2691,7 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uGlowMode:    { value: encodeGlowMode(glowMode) },
     uRandomGlowSpeed: { value: randomGlowSpeed },
     uMorphFactor: { value: morphUniformValue },
-    uColorMix: { value: 0.0 }, // Explicit color blend uniform (0 = base color, 1 = morph color)
+    uColorMix: { value: 0.0 },  // color blend: 0 = current, 1 = new
 
     // Size attenuation (0 = off, 1 = on). Ref distance where size is unchanged.
     uSizeAttenEnabled: { value: 0.0 },
@@ -2624,11 +2774,11 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
     uniform float uWindEnabled;
     varying vec3  vColor;
     varying vec3  vMorphColor;
-    varying vec3  vBlendedColor;
     varying float vPulse;
     varying float vViewZ;
     varying float vHash;
     varying float vMorphFactor;
+    varying float vColorMix;
 
     void main() {
       float morph = clamp(uMorphFactor, 0.0, 1.0);
@@ -2763,10 +2913,8 @@ function makeGlowMaterial(hasVertexColor, baseSizePx = 3.0) {
       // If morphColor isn't available, use color as fallback
       bool hasMorphColor = length(morphColor) > 0.001;
       vMorphColor = hasMorphColor ? morphColor : color;
-      // Blend colors in vertex shader using uColorMix (explicit color blend separate from position morph)
-      float colorMix = clamp(uColorMix, 0.0, 1.0);
-      vBlendedColor = mix(vColor, vMorphColor, colorMix);
-      vMorphFactor = morph; // pass morph factor to fragment shader (for position morph)
+      vMorphFactor = morph; // pass morph factor to fragment shader
+      vColorMix = uColorMix; // pass color mix factor to fragment shader
       vViewZ = dist;
       gl_Position = projectionMatrix * mvPosition;
     }
@@ -2787,11 +2935,11 @@ uniform vec3  uFogColor;
 
 varying vec3  vColor;
 varying vec3  vMorphColor;
-varying vec3  vBlendedColor;
 varying float vPulse;
 varying float vViewZ;
 varying float vHash;
 varying float vMorphFactor;
+varying float vColorMix;
 
 void main() {
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
@@ -2808,9 +2956,12 @@ void main() {
 
   float pulse = clamp(vPulse, 0.0, 1.0);
   
-  // Use pre-blended color from vertex shader (blended using uColorMix)
-  // This ensures colors always blend smoothly on-GPU every frame
-  vec3 base = mix(uColor, vBlendedColor, uUseVertexColor);
+  // Blend colors smoothly using vColorMix (separate from position morph)
+  // Debug: output colorMix as color for first few frames to verify it's working
+  vec3 blendedColor = mix(vColor, vMorphColor, vColorMix);
+  
+  // Apply vertex color or use base white
+  vec3 base = mix(uColor, blendedColor, uUseVertexColor);
   vec3 highlighted = mix(base, uHighlightColor, pulse);
   vec3 col  = highlighted * (1.0 + uGlowBoost * pulse);
 
@@ -3053,36 +3204,45 @@ function buildPoints() {
 
   const hasColor = !!g.getAttribute('color');
 
-  if (!points) {
-    // First time: create material + mesh
-    const mat = makeGlowMaterial(hasColor, pointSizePx);
-    if (mat?.uniforms?.uSquareMix) {
-      mat.uniforms.uSquareMix.value = squareMix;
-    }
-    points = new THREE.Points(g, mat);
-    points.frustumCulled = true;
-    pointCloudGroup.add(points);
-  } else {
-    // Subsequent rebuilds: keep material, just swap geometry
-    points.geometry.dispose();
-    points.geometry = g;
+if (!points) {
+  // first time: create material + mesh
+  const mat = makeGlowMaterial(hasColor, pointSizePx);
+  points = new THREE.Points(g, mat);
+  points.frustumCulled = true;
+  pointCloudGroup.add(points);
+} else {
+  // subsequent rebuilds: keep material, just swap geometry
+  points.geometry.dispose();
+  points.geometry = g;
 
-    // Update uBaseSize if pointSizePx changed
-    if (points.material?.uniforms?.uBaseSize) {
-      points.material.uniforms.uBaseSize.value = pointSizePx;
-    }
-    
-    // Update uUseVertexColor if color availability changed
-    if (points.material?.uniforms?.uUseVertexColor !== undefined) {
-      points.material.uniforms.uUseVertexColor.value = hasColor ? 1 : 0;
-    }
+  // also, if pointSizePx changed and you need to update uBaseSize, do it here
+  if (points.material?.uniforms?.uBaseSize) {
+    points.material.uniforms.uBaseSize.value = pointSizePx;
+  }
+}
+
+// after that, sync uniforms again (world size, fog, scatter, colorMix, etc)
+
+  const mat = makeGlowMaterial(hasColor, pointSizePx);
+  if (mat?.uniforms?.uSquareMix) {
+    mat.uniforms.uSquareMix.value = squareMix;
   }
 
+  // clean up old
+  if (points) {
+    points.geometry.dispose();
+    points.material.dispose();
+    pointCloudGroup.remove(points);
+  }
+
+  points = new THREE.Points(g, mat);
+  points.frustumCulled = true;
+  pointCloudGroup.add(points);
+
   // --- sync uniforms to current app state (IMPORTANT) ---
-  // This ensures uniforms maintain their values across rebuilds
   const u = points.material.uniforms;
   if (u) {
-    // World size / camera dependent
+    // world size / camera dependent
     updateWorldSizeUniforms();
 
     if (u.uWindAmp) {
@@ -3094,14 +3254,17 @@ function buildPoints() {
     if (u.uHighlightColor) {
       u.uHighlightColor.value.set(highlightColorHex);
     }
-    
-    // CRITICAL: Restore morph and color blend values
     if (u.uMorphFactor) {
       u.uMorphFactor.value = morphUniformValue;
     }
+
+    // 👇 this was missing: carry over the live colour blend % 
     if (u.uColorMix) {
+      // scrollTweenState.colorMix is what you tween in tweenToScrollTargets()
       u.uColorMix.value = scrollTweenState?.colorMix ?? 0;
     }
+
+    // also re-apply fog, scatter, etc.
   }
 
   updateFog();

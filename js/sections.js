@@ -41,38 +41,111 @@ export const sections = [
     },
   },
   {
-    id: 'harbour',
+    id: 'Server',
     eyebrow: 'Chapter 02',
-    title: ['Tidal Exchanges', 'of Belonging'],
-    body: 'Every commute, every glance, every fragment of conversation leaves a trace that drifts like harbour mist.',
-    modelPath: 'point/nz2.ply',
-    backgroundText: ['Tidal Exchanges', 'Of Belonging'],
-    camera: { pathT: 0.1, yaw: -18, pitch: -6 },
+    title: ['The hidden machine'],
+    body: 'AI runs on vast networks of servers crunching billions of calculations. Electricity keeps them alive. Cooling keeps them stable.',
+    modelPath: 'point/server-pc.ply',
+    colorSource: 'point/akl3-bw.ply',
+    backgroundText: ['Midtown', 'Signal Lines'],
+    camera: { pathT: 0.42, yaw: -8, pitch: -4 },
     transform: {
-      rotation: { x: 0, y: 0.95, z: 0.05 },
-      scale: 1.2,
-      offset: { x: 0, y: 0, z: -0.19 }
+      rotation: { x: -1.6, y: -1.2, z: 0 },
+      scale: 0.8,
+      offset: { x: -0.15, y: 0.05, z: 0.1 }
     },
     settings: {
-      highlightColor: '#ffa84d',
+      highlightColor: '#99d6ff',
       background: { top: '#4f6469', mid: '#162227', bottom: '#000000' },
+      useOriginalPointColors: true,
     },
+  },
+  {
+    id: 'Earth',
+    eyebrow: 'Chapter 02',
+    title: ['The hidden machine'],
+    body: 'Globally, data centres already use 1–2% of all electricity — and that number’s climbing fast.',
+    modelPath: 'point/earthV2.ply',
+    colorSource: 'point/akl3-bw.ply',
+    backgroundText: ['Midtown', 'Signal Lines'],
+    camera: { pathT: 0.42, yaw: -8, pitch: -4 },
+    transform: {
+      rotation: { x: 1.6, y: -0.3, z: 0.2 },
+      scale: 0.65,
+      offset: { x: -0.35, y: -0.05, z: 0.1 }
+    },
+    settings: {
+      highlightColor: '#EA802A',
+      background: { top: '#000000', mid: '#000000', bottom: '#382424' },
+      useOriginalPointColors: true,
+    },
+    // transitionRules: {
+    //   from: {
+    //     Server: {
+    //       allowSpin: false,
+    //       allowScatter: false,
+    //     },
+    //   },
+    //   to: {
+    //     Server: {
+    //       allowSpin: false,
+    //       allowScatter: false,
+    //     },
+    //   },
+    // },
   },
   {
     id: 'midtown',
     eyebrow: 'Chapter 03',
-    title: ['Midtown', 'Signal Lines'],
-    body: 'Peak hour becomes a choreography of dots — networks in flux searching for new alignments.',
-    modelPath: 'point/server-pc.ply',
-    backgroundText: ['Midtown', 'Signal Lines'],
-    camera: { pathT: 0.42, yaw: -8, pitch: -4 },
-    // transform: {
-    //   rotation: { x: -0.05, y: 0, z: -0.1 },
-    //   scale: 0.9,
-    //   offset: { x: -0.15, y: 0.05, z: 0.1 }
-    // },
+    title: ['Out of sight, not out of impact'],
+    body: 'Training large AI models emits hundreds of tons of CO₂ and uses hundreds of thousands of litres of water. ',
+    modelPath: 'point/riverV2.ply',
+    colorSource: 'point/riverV2.ply',
+    backgroundText: ['Sketching', 'Possible Futures'],
+    camera: { pathT: 0.65, yaw: 0, pitch: -20 },
+    transform: {
+      rotation: { x: 1.15, y: 0.45, z: 0 },
+      scale: 1.2,
+      offset: { x: 0.1, y: 0.2, z: -0.1 }
+    },
     settings: {
-      highlightColor: '#99d6ff',
+      highlightColor: '#6A78E2',
+      background: { top: '#8F8F8F', mid: '#1a1a2e', bottom: '#020203' },
+      useOriginalPointColors: true,
+    },
+  },
+  {
+    id: 'iawhr',
+    eyebrow: 'Chapter 03',
+    title: ['Out of sight, not out of impact'],
+    body: 'The hardware that drives it comes from rare minerals mined and shipped across the globe. These costs are invisible — hidden behind glowing screens.',
+    modelPath: 'point/riverV2.ply',
+    colorSource: 'point/akl3-bw.ply',
+    backgroundText: ['Sketching', 'Possible Futures'],
+    camera: { pathT: 0.65, yaw: 0, pitch: -20 },
+    transform: {
+      rotation: { x: 1.15, y: 0.45, z: 0 },
+      scale: 1.2,
+      offset: { x: 0.1, y: 0.2, z: -0.1 }
+    },
+    settings: {
+      highlightColor: '#E2826A',
+      background: { top: '#B7A38F', mid: '#1a1a2e', bottom: '#020203' },
+      useOriginalPointColors: true,
+    },
+    transitionRules: {
+      from: {
+        midtown: {
+          allowSpin: false,
+          allowScatter: false,
+        },
+      },
+      to: {
+        midtown: {
+          allowSpin: false,
+          allowScatter: false,
+        },
+      },
     },
   },
   {
@@ -81,6 +154,7 @@ export const sections = [
     title: ['Closer', 'to Home'],
     body: 'Aotearoa\'s grid is mostly renewable, yet our growing data hubs in Auckland and Southland still draw huge energy to feed global AI demand. Clean doesn\'t mean free — each digital action still leaves a trace.',
     modelPath: 'point/nz2.ply',
+    colorSource: 'point/akl3-bw.ply',
     backgroundText: ['Sketching', 'Possible Futures'],
     camera: { pathT: 0.1, yaw: -18, pitch: -6 },
     transform: {
@@ -99,7 +173,7 @@ export const sections = [
     eyebrow: 'Chapter 05',
     title: ['Sketching', 'Possible Futures'],
     body: 'As the points return to form, the city imagines what it might become under a new collective rhythm.',
-    modelPath: 'point/riverV1.ply',
+    modelPath: 'point/riverV2.ply',
     backgroundText: ['Sketching', 'Possible Futures'],
     camera: { pathT: 0.65, yaw: 0, pitch: -20 },
     transform: {
